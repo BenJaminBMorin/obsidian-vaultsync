@@ -1,0 +1,1948 @@
+import { App, Plugin, PluginSettingTab, Setting, Notice, Modal, TFile, TAbstractFile, WorkspaceLeaf, Menu } from 'obsidian';
+import { io, Socket } from 'socket.io-client';
+import { SyncService, SyncMode } from './src/services/SyncService';
+import { FileSyncService } from './src/services/FileSyncService';
+import { LargeFileService, UploadProgress } from './src/services/LargeFileService';
+import { ConflictService } from './src/services/ConflictService';
+import { SyncLogService } from './src/services/SyncLogService';
+import { SyncLogModal } from './src/ui/SyncLogModal';
+import { UploadProgressModal } from './src/ui/UploadProgressModal';
+import { ConflictListView, CONFLICT_LIST_VIEW_TYPE } from './src/ui/ConflictListView';
+import { ConflictResolutionModal } from './src/ui/ConflictResolutionModal';
+import { APIClient } from './src/api/APIClient';
+import { EventBus, EVENTS } from './src/core/EventBus';
+import { StorageManager } from './src/core/StorageManager';
+import { InitialSyncService } from './src/services/InitialSyncService';
+import { InitialSyncState } from './src/types/initial-sync.types';
+import { logger, LogLevel, LOG_LEVEL_NAMES, LOG_LEVEL_DESCRIPTIONS } from './src/utils/logger';
+import { VaultService } from './src/services/VaultService';
+import { AuthService } from './src/services/AuthService';
+
+interface VaultSyncSettings {
+	apiUrl: string;
+	wsUrl: string;
+	apiKey: string;
+	vaultId: string;
+	deviceId: string;
+	includedFolders: string[];
+	excludedFolders: string[];
+	autoSync: boolean;
+	syncMode: SyncMode;
+	// Additional settings from PluginSettings type
+	apiKeyExpires: Date | null;
+	selectedVaultId: string | null;
+	syncInterval: number;
+	collaborationEnabled: boolean;
+	showPresence: boolean;
+	showCursors: boolean;
+	showTypingIndicators: boolean;
+	notifyOnSync: boolean;
+	notifyOnConflict: boolean;
+	notifyOnCollaboratorJoin: boolean;
+	maxConcurrentUploads: number;
+	chunkSize: number;
+	cacheEnabled: boolean;
+	apiBaseURL: string;
+	wsBaseURL: string;
+	debugMode: boolean;
+	logLevel: number; // LogLevel enum value
+	// Initial sync states per vault
+	initialSyncStates: { [vaultId: string]: InitialSyncState };
+}
+
+const DEFAULT_SETTINGS: VaultSyncSettings = {
+	apiUrl: 'http://localhost:3001/v1',
+	wsUrl: 'http://localhost:3001',
+	apiKey: '',
+	vaultId: '',
+	deviceId: '',
+	includedFolders: [],
+	excludedFolders: ['.obsidian', '.trash'],
+	autoSync: true,
+	syncMode: SyncMode.SMART_SYNC,
+	apiKeyExpires: null,
+	selectedVaultId: null,
+	syncInterval: 30,
+	collaborationEnabled: false,
+	showPresence: true,
+	showCursors: true,
+	showTypingIndicators: true,
+	notifyOnSync: false,
+	notifyOnConflict: true,
+	notifyOnCollaboratorJoin: true,
+	maxConcurrentUploads: 5,
+	chunkSize: 1048576,
+	cacheEnabled: true,
+	apiBaseURL: 'http://localhost:3001/v1',
+	wsBaseURL: 'http://localhost:3001',
+	debugMode: false,
+	logLevel: 3, // LogLevel.INFO
+	initialSyncStates: {}
+}
+
+export default class VaultSyncPlugin extends Plugin {
+	settings: VaultSyncSettings;
+	socket: Socket | null = null;
+	statusBarItem: HTMLElement;
+	ribbonIconEl: HTMLElement | null = null;
+	isConnected: boolean = false;
+	isSyncing: boolean = false;
+	private fileChangeDebounce: Map<string, NodeJS.Timeout> = new Map();
+
+	// Notification batching
+	private notificationBatch: Map<string, { files: string[], timeout: NodeJS.Timeout }> = new Map();
+	private readonly BATCH_DELAY_MS = 2000; // 2 second delay for batching
+
+	// Services
+	apiClient: APIClient | null = null; // Public for settings tab
+	private eventBus: EventBus | null = null;
+	private storage: StorageManager | null = null;
+	private syncService: SyncService | null = null;
+	private fileSyncService: FileSyncService | null = null;
+	private largeFileService: LargeFileService | null = null;
+	vaultService: VaultService | null = null; // Public for settings tab
+	private conflictService: ConflictService | null = null;
+	private syncLogService: SyncLogService | null = null;
+	initialSyncService: InitialSyncService | null = null; // Public for SettingsTab access
+	authService: any = null; // Public for SettingsTab access
+	
+	// Upload progress tracking
+	private uploadProgressModal: UploadProgressModal | null = null;
+	private uploadStatusBarItem: HTMLElement | null = null;
+
+	async onload() {
+		await this.loadSettings();
+
+		// Initialize logger with user's log level
+		logger.setLevel(this.settings.logLevel as LogLevel);
+		logger.info('VaultSync plugin loading...');
+
+		// Generate device ID if not exists
+		if (!this.settings.deviceId) {
+			this.settings.deviceId = `obsidian-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+			await this.saveSettings();
+		}
+
+		// Initialize services
+		this.initializeServices();
+
+		// Add status bar item
+		this.statusBarItem = this.addStatusBarItem();
+		this.updateStatusBar('disconnected');
+
+		// Register conflict list view
+		this.registerView(
+			CONFLICT_LIST_VIEW_TYPE,
+			(leaf) => new ConflictListView(leaf, this.conflictService!)
+		);
+
+		// Add ribbon icon with menu
+		this.ribbonIconEl = this.addRibbonIcon('sync', 'VaultSync', (evt: MouseEvent) => {
+			this.showSyncMenu(evt);
+		});
+		this.updateRibbonIcon();
+
+		// Add settings tab
+		this.addSettingTab(new VaultSyncSettingTab(this.app, this));
+
+		// Register file events
+		this.registerFileEvents();
+
+		// Register all commands
+		this.registerCommands();
+
+		// Connect if settings are configured
+		if (this.settings.apiKey && this.settings.vaultId && this.settings.autoSync) {
+			await this.connect();
+		}
+
+		console.log('VaultSync plugin loaded');
+	}
+
+	/**
+	 * Initialize services
+	 */
+	private initializeServices(): void {
+		// Initialize core services
+		this.eventBus = new EventBus();
+		this.storage = new StorageManager(this);
+		
+		// Initialize auth service (simple wrapper for API key storage)
+		this.authService = {
+			getApiKey: async () => this.settings.apiKey,
+			setApiKey: async (key: string) => {
+				this.settings.apiKey = key;
+				await this.saveSettings();
+			},
+			clearApiKey: async () => {
+				this.settings.apiKey = '';
+				await this.saveSettings();
+			},
+			getAuthState: () => ({
+				isAuthenticated: !!this.settings.apiKey,
+				apiKey: this.settings.apiKey,
+				expiresAt: this.settings.apiKeyExpires
+			}),
+			getDaysUntilExpiration: () => {
+				if (!this.settings.apiKeyExpires) return null;
+				const now = new Date();
+				const expires = new Date(this.settings.apiKeyExpires);
+				const diff = expires.getTime() - now.getTime();
+				return Math.ceil(diff / (1000 * 60 * 60 * 24));
+			},
+			isTokenExpiringSoon: () => {
+				const days = this.authService?.getDaysUntilExpiration();
+				return days !== null && days <= 7;
+			}
+		};
+		
+		this.apiClient = new APIClient(this.authService as any, this.settings.apiUrl);
+
+		// Initialize vault service
+		this.vaultService = new VaultService(
+			this,
+			this.apiClient,
+			this.storage,
+			this.eventBus
+		);
+
+		// Initialize sync log service
+		this.syncLogService = new SyncLogService(this.eventBus, this.storage);
+
+		// Initialize conflict service
+		this.conflictService = new ConflictService(
+			this.app.vault,
+			this.apiClient,
+			this.eventBus,
+			this.storage
+		);
+
+		// Initialize large file service for chunked uploads
+		this.largeFileService = new LargeFileService(
+			this.apiClient,
+			this.eventBus,
+			{
+				chunkSize: this.settings.chunkSize,
+				largeFileThreshold: 5 * 1024 * 1024, // 5MB threshold
+				maxConcurrentChunks: 3,
+				retryAttempts: 3,
+				retryDelayMs: 1000
+			}
+		);
+
+		// Initialize file sync service (used by both SyncService and InitialSyncService)
+		this.fileSyncService = new FileSyncService(
+			this.app.vault,
+			this.apiClient,
+			this.eventBus,
+			this.storage,
+			this.largeFileService
+		);
+
+		// Initialize sync service
+		this.syncService = new SyncService(
+			this.app.vault,
+			this.apiClient,
+			this.eventBus,
+			this.storage,
+			{
+				mode: this.settings.syncMode,
+				autoSync: this.settings.autoSync,
+				includedFolders: this.settings.includedFolders,
+				excludedFolders: this.settings.excludedFolders,
+				debounceDelay: 1000,
+				maxRetries: 3,
+				retryDelayMs: 1000,
+				maxRetryDelayMs: 30000,
+				maxConcurrent: 5
+			}
+		);
+
+		// Initialize initial sync service
+		this.initialSyncService = new InitialSyncService(
+			this.app.vault,
+			this.apiClient,
+			this.fileSyncService, // Use the dedicated FileSyncService instance
+			this.storage,
+			this.eventBus,
+			{
+				excludedFolders: this.settings.excludedFolders
+			}
+		);
+
+		// Setup upload progress handlers
+		this.setupUploadProgressHandlers();
+
+		console.log('Services initialized');
+	}
+
+	/**
+	 * Setup upload progress event handlers
+	 */
+	private setupUploadProgressHandlers(): void {
+		if (!this.eventBus) return;
+
+		// Handle upload started
+		this.eventBus.on(EVENTS.UPLOAD_STARTED, (data: { uploadId: string; filePath: string }) => {
+			console.log(`[Upload] Started: ${data.filePath}`);
+		});
+
+		// Handle upload progress
+		this.eventBus.on(EVENTS.UPLOAD_PROGRESS, (progress: UploadProgress) => {
+			this.updateUploadProgress(progress);
+		});
+
+		// Handle upload completed
+		this.eventBus.on(EVENTS.UPLOAD_COMPLETED, (data: { uploadId: string; filePath: string; size: number }) => {
+			console.log(`[Upload] Completed: ${data.filePath}`);
+			this.clearUploadProgress();
+			new Notice(`Upload completed: ${data.filePath}`);
+		});
+
+		// Handle upload failed
+		this.eventBus.on(EVENTS.UPLOAD_FAILED, (data: { uploadId: string; filePath: string; error: string }) => {
+			console.error(`[Upload] Failed: ${data.filePath}`, data.error);
+			this.clearUploadProgress();
+			new Notice(`Upload failed: ${data.filePath}\n${data.error}`, 10000);
+		});
+
+		// Handle upload cancelled
+		this.eventBus.on(EVENTS.UPLOAD_CANCELLED, (data: { uploadId: string }) => {
+			console.log(`[Upload] Cancelled: ${data.uploadId}`);
+			this.clearUploadProgress();
+			new Notice('Upload cancelled');
+		});
+	}
+
+	/**
+	 * Update upload progress UI
+	 */
+	private updateUploadProgress(progress: UploadProgress): void {
+		// Update status bar
+		if (!this.uploadStatusBarItem) {
+			this.uploadStatusBarItem = this.addStatusBarItem();
+			this.uploadStatusBarItem.addClass('status-bar-upload-progress');
+		}
+
+		const percent = progress.percentComplete.toFixed(0);
+		const speed = this.formatBytes(progress.speed);
+		const eta = this.formatTime(progress.estimatedTimeRemaining);
+
+		this.uploadStatusBarItem.setText(`⬆️ ${percent}% • ${speed}/s • ${eta}`);
+
+		// Show modal for large uploads (>20MB)
+		if (progress.totalSize > 20 * 1024 * 1024 && !this.uploadProgressModal) {
+			this.uploadProgressModal = new UploadProgressModal(
+				this.app,
+				progress,
+				() => {
+					if (this.largeFileService) {
+						this.largeFileService.cancelUpload(progress.uploadId);
+					}
+				}
+			);
+			this.uploadProgressModal.open();
+		}
+
+		// Update existing modal
+		if (this.uploadProgressModal) {
+			this.uploadProgressModal.updateProgress(progress);
+		}
+	}
+
+	/**
+	 * Clear upload progress UI
+	 */
+	private clearUploadProgress(): void {
+		if (this.uploadStatusBarItem) {
+			this.uploadStatusBarItem.remove();
+			this.uploadStatusBarItem = null;
+		}
+
+		if (this.uploadProgressModal) {
+			this.uploadProgressModal.close();
+			this.uploadProgressModal = null;
+		}
+	}
+
+	/**
+	 * Format bytes to human readable
+	 */
+	private formatBytes(bytes: number): string {
+		if (bytes === 0) return '0 B';
+		const k = 1024;
+		const sizes = ['B', 'KB', 'MB', 'GB'];
+		const i = Math.floor(Math.log(bytes) / Math.log(k));
+		return Math.round((bytes / Math.pow(k, i)) * 10) / 10 + ' ' + sizes[i];
+	}
+
+	/**
+	 * Format time to human readable
+	 */
+	private formatTime(seconds: number): string {
+		if (seconds < 0 || !isFinite(seconds)) return '...';
+		if (seconds < 60) return `${Math.round(seconds)}s`;
+		const minutes = Math.floor(seconds / 60);
+		const secs = Math.round(seconds % 60);
+		return `${minutes}m ${secs}s`;
+	}
+
+	/**
+	 * Register all commands
+	 */
+	private registerCommands(): void {
+		// Connect command
+		this.addCommand({
+			id: 'vaultsync-connect',
+			name: 'Connect',
+			icon: 'plug-zap',
+			hotkeys: [
+				{
+					modifiers: ['Mod', 'Shift'],
+					key: 'c'
+				}
+			],
+			callback: () => this.connect()
+		});
+
+		// Disconnect command
+		this.addCommand({
+			id: 'vaultsync-disconnect',
+			name: 'Disconnect',
+			icon: 'plug-zap-off',
+			hotkeys: [
+				{
+					modifiers: ['Mod', 'Shift'],
+					key: 'd'
+				}
+			],
+			callback: () => this.disconnect()
+		});
+
+		// Pull All command
+		this.addCommand({
+			id: 'vaultsync-pull-all',
+			name: 'Pull All',
+			icon: 'download',
+			hotkeys: [
+				{
+					modifiers: ['Mod', 'Shift'],
+					key: 'p'
+				}
+			],
+			callback: () => this.performPullAll()
+		});
+
+		// Push All command
+		this.addCommand({
+			id: 'vaultsync-push-all',
+			name: 'Push All',
+			icon: 'upload',
+			hotkeys: [
+				{
+					modifiers: ['Mod', 'Shift'],
+					key: 'u'
+				}
+			],
+			callback: () => this.performPushAll()
+		});
+
+		// Force Sync command
+		this.addCommand({
+			id: 'vaultsync-force-sync',
+			name: 'Force Sync',
+			icon: 'zap',
+			hotkeys: [
+				{
+					modifiers: ['Mod', 'Shift'],
+					key: 'f'
+				}
+			],
+			callback: () => this.performForceSync()
+		});
+
+		// View Conflicts command
+		this.addCommand({
+			id: 'vaultsync-view-conflicts',
+			name: 'View Conflicts',
+			icon: 'alert-triangle',
+			hotkeys: [
+				{
+					modifiers: ['Mod', 'Shift'],
+					key: 'k'
+				}
+			],
+			callback: () => this.viewConflicts()
+		});
+
+		// View Sync Log command
+		this.addCommand({
+			id: 'vaultsync-view-sync-log',
+			name: 'View Sync Log',
+			icon: 'file-text',
+			hotkeys: [
+				{
+					modifiers: ['Mod', 'Shift'],
+					key: 'l'
+				}
+			],
+			callback: () => this.viewSyncLog()
+		});
+
+		// Smart Sync command (for backward compatibility)
+		this.addCommand({
+			id: 'vaultsync-smart-sync',
+			name: 'Smart Sync',
+			icon: 'refresh-cw',
+			hotkeys: [
+				{
+					modifiers: ['Mod', 'Shift'],
+					key: 's'
+				}
+			],
+			callback: () => this.performSmartSync()
+		});
+
+		console.log('Commands registered with keyboard shortcuts');
+	}
+
+	onunload() {
+		this.disconnect();
+		console.log('VaultSync plugin unloaded');
+	}
+
+	async loadSettings() {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
+	}
+
+	registerFileEvents() {
+		// File created
+		this.registerEvent(
+			this.app.vault.on('create', (file: TAbstractFile) => {
+				if (file instanceof TFile) {
+					// Forward to SyncService which handles selective sync internally
+					if (this.syncService) {
+						this.syncService.handleFileCreate(file);
+					}
+				}
+			})
+		);
+
+		// File modified
+		this.registerEvent(
+			this.app.vault.on('modify', (file: TAbstractFile) => {
+				if (file instanceof TFile) {
+					// Forward to SyncService which handles selective sync internally
+					if (this.syncService) {
+						this.syncService.handleFileModify(file);
+					}
+				}
+			})
+		);
+
+		// File deleted
+		this.registerEvent(
+			this.app.vault.on('delete', (file: TAbstractFile) => {
+				if (file instanceof TFile) {
+					// Forward to SyncService which handles selective sync internally
+					if (this.syncService) {
+						this.syncService.handleFileDelete(file);
+					}
+				}
+			})
+		);
+
+		// File renamed
+		this.registerEvent(
+			this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
+				if (file instanceof TFile) {
+					// Forward to SyncService which handles selective sync internally
+					if (this.syncService) {
+						this.syncService.handleFileRename(file, oldPath);
+					}
+				}
+			})
+		);
+	}
+
+	shouldSyncFile(file: TFile): boolean {
+		const path = file.path;
+
+		// Check if file is in excluded folders
+		for (const folder of this.settings.excludedFolders) {
+			if (path.startsWith(folder + '/') || path === folder) {
+				return false;
+			}
+		}
+
+		// If there are included folders specified, check if path is in one of them
+		if (this.settings.includedFolders.length > 0) {
+			for (const folder of this.settings.includedFolders) {
+				if (path.startsWith(folder + '/') || path === folder) {
+					return true;
+				}
+			}
+			// Path is not in any included folder
+			return false;
+		}
+
+		// No included folders specified, so sync everything that's not excluded
+		return true;
+	}
+
+	handleFileChange(file: TFile, action: 'create' | 'modify' | 'delete') {
+		if (!this.isConnected || !this.settings.autoSync) {
+			return;
+		}
+
+		// Debounce file changes to avoid excessive sync
+		const existingTimeout = this.fileChangeDebounce.get(file.path);
+		if (existingTimeout) {
+			clearTimeout(existingTimeout);
+		}
+
+		const timeout = setTimeout(async () => {
+			this.fileChangeDebounce.delete(file.path);
+			await this.syncFile(file, action);
+		}, 1000); // 1 second debounce
+
+		this.fileChangeDebounce.set(file.path, timeout);
+	}
+
+	handleFileRename(file: TFile, oldPath: string) {
+		if (!this.isConnected || !this.settings.autoSync) {
+			return;
+		}
+
+		// Handle rename as delete old + create new
+		this.syncFileRename(oldPath, file.path);
+	}
+
+	async syncFile(file: TFile, action: 'create' | 'modify' | 'delete') {
+		try {
+			this.isSyncing = true;
+			this.updateStatusBar('syncing');
+
+			let content = '';
+			let hash = '';
+
+			if (action !== 'delete') {
+				content = await this.app.vault.read(file);
+				hash = await this.computeHash(content);
+			}
+
+			if (this.socket && this.socket.connected) {
+				this.socket.emit('file_update', {
+					vault_id: this.settings.vaultId,
+					file_path: file.path,
+					content: content,
+					hash: hash,
+					action: action,
+					timestamp: Date.now()
+				});
+			}
+
+			this.isSyncing = false;
+			this.updateStatusBar('connected');
+		} catch (error) {
+			console.error('Error syncing file:', error);
+			new Notice(`Failed to sync ${file.path}: ${error.message}`);
+			this.isSyncing = false;
+			this.updateStatusBar('error');
+		}
+	}
+
+	async syncFileRename(oldPath: string, newPath: string) {
+		try {
+			if (this.socket && this.socket.connected) {
+				this.socket.emit('file_rename', {
+					vault_id: this.settings.vaultId,
+					old_path: oldPath,
+					new_path: newPath,
+					timestamp: Date.now()
+				});
+			}
+		} catch (error) {
+			console.error('Error syncing file rename:', error);
+			new Notice(`Failed to sync rename: ${error.message}`);
+		}
+	}
+
+	async computeHash(content: string): Promise<string> {
+		const encoder = new TextEncoder();
+		const data = encoder.encode(content);
+		const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+		const hashArray = Array.from(new Uint8Array(hashBuffer));
+		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+	}
+
+	/**
+	 * Show initial sync wizard for first-time connection
+	 * Analyzes files and presents sync options to the user
+	 */
+	async showInitialSyncWizard(): Promise<void> {
+		if (!this.initialSyncService || !this.settings.vaultId || !this.eventBus) {
+			console.error('[VaultSync] Cannot show initial sync wizard: service or vault ID not available');
+			throw new Error('Initial sync service not available');
+		}
+
+		try {
+			console.log('[VaultSync] Starting file analysis for initial sync...');
+			new Notice('Analyzing files for first-time setup...');
+
+			// Analyze files
+			const analysis = await this.initialSyncService.analyzeFiles(this.settings.vaultId);
+
+			console.log('[VaultSync] File analysis complete:', {
+				localOnly: analysis.localFiles.length,
+				remoteOnly: analysis.remoteFiles.length,
+				both: analysis.commonFiles.length,
+				excluded: analysis.excludedFiles.length
+			});
+
+			// Import the wizard modal
+			const { InitialSyncWizardModal } = await import('./src/ui/InitialSyncWizardModal');
+
+			// Store references for use in closure
+			const initialSyncService = this.initialSyncService;
+			const eventBus = this.eventBus;
+
+			// Show wizard modal
+			return new Promise<void>((resolve, reject) => {
+				const modal = new InitialSyncWizardModal(
+					this.app,
+					{
+						vaultId: this.settings.vaultId,
+						vaultName: this.settings.vaultId.substring(0, 8) + '...', // Show truncated ID
+						analysis,
+						onComplete: async (option) => {
+							console.log('[VaultSync] Initial sync completed with option:', option);
+							resolve();
+						},
+						onCancel: () => {
+							console.log('[VaultSync] Initial sync cancelled by user');
+							reject(new Error('Initial sync cancelled by user'));
+						}
+					},
+					initialSyncService,
+					eventBus
+				);
+
+				modal.open();
+			});
+		} catch (error) {
+			console.error('[VaultSync] Error during initial sync wizard:', error);
+			new Notice(`Initial sync setup failed: ${error.message}`);
+			throw error;
+		}
+	}
+
+	async connect() {
+		if (!this.settings.apiKey) {
+			new Notice('Please configure your API key in settings');
+			return;
+		}
+
+		if (!this.settings.vaultId) {
+			new Notice('Please select a vault in settings');
+			return;
+		}
+
+		if (this.socket && this.socket.connected) {
+			new Notice('Already connected');
+			return;
+		}
+
+		try {
+			console.log('[VaultSync] Connecting with vault ID:', this.settings.vaultId);
+			this.updateStatusBar('connecting');
+
+			// Get vault information for cross-tenant detection
+			let isCrossTenant = false;
+			let permission: 'read' | 'write' | 'admin' = 'admin';
+			
+			if (this.vaultService) {
+				try {
+					await this.vaultService.selectVault(this.settings.vaultId);
+					isCrossTenant = this.vaultService.isCrossTenantVault();
+					permission = this.vaultService.getCurrentVaultPermission() || 'admin';
+					console.log('[VaultSync] Vault info:', { isCrossTenant, permission });
+				} catch (error) {
+					console.warn('[VaultSync] Failed to get vault info:', error);
+				}
+			}
+
+			// Initialize fileSyncService early so it can be used by initial sync wizard
+			if (this.fileSyncService) {
+				console.log('[VaultSync] Pre-initializing FileSyncService for initial sync');
+				await this.fileSyncService.initialize(this.settings.vaultId, isCrossTenant, permission);
+			}
+
+			// Check if this is first-time connection
+			let completedInitialSync = false;
+			if (this.initialSyncService) {
+				const isFirstTime = await this.initialSyncService.isFirstTimeConnection(this.settings.vaultId);
+				
+				if (isFirstTime) {
+					console.log('[VaultSync] First-time connection detected, showing initial sync wizard');
+					try {
+						// Show initial sync wizard and wait for completion
+						await this.showInitialSyncWizard();
+						completedInitialSync = true;
+						console.log('[VaultSync] Initial sync wizard completed successfully');
+					} catch (error) {
+						// User cancelled or error occurred
+						console.log('[VaultSync] Initial sync wizard was cancelled or failed:', error.message);
+						this.updateStatusBar('disconnected');
+						return; // Don't proceed with connection
+					}
+				}
+			}
+
+			// Initialize remaining services with vault
+			if (this.syncService && this.conflictService) {
+				console.log('[VaultSync] Initializing remaining services with vault ID:', this.settings.vaultId);
+				await this.syncService.initialize(this.settings.vaultId, isCrossTenant, permission);
+				await this.conflictService.initialize(this.settings.vaultId, isCrossTenant, permission);
+				await this.syncService.start();
+				console.log('[VaultSync] Services initialized successfully');
+			}
+
+			this.socket = io(this.settings.wsUrl, {
+				auth: {
+					token: this.settings.apiKey
+				},
+				transports: ['websocket'],
+				reconnection: true,
+				reconnectionDelay: 1000,
+				reconnectionDelayMax: 5000,
+				reconnectionAttempts: Infinity
+			});
+
+			this.socket.on('connect', async () => {
+				console.log('Connected to VaultSync');
+				this.isConnected = true;
+				this.updateStatusBar('connected');
+				
+				// Show appropriate success message
+				if (completedInitialSync) {
+					new Notice('Initial sync complete! Connected to VaultSync');
+				} else {
+					new Notice('Connected to VaultSync');
+				}
+
+				// Subscribe to vault
+				if (this.socket) {
+					this.socket.emit('subscribe', {
+						vault_id: this.settings.vaultId,
+						device_id: this.settings.deviceId
+					});
+				}
+
+				// Trigger reconnection sync check
+				if (this.syncService && !completedInitialSync) {
+					console.log('[VaultSync] Triggering reconnection sync check...');
+					await this.syncService.handleReconnection();
+				}
+			});
+
+			this.socket.on('disconnect', () => {
+				console.log('Disconnected from VaultSync');
+				this.isConnected = false;
+				this.updateStatusBar('disconnected');
+			});
+
+			this.socket.on('subscribed', (data: any) => {
+				console.log('Subscribed to vault:', data);
+				new Notice('Subscribed to vault sync');
+			});
+
+			this.socket.on('sync_event', async (data: any) => {
+				console.log('Received sync event:', data);
+				await this.handleRemoteChange(data);
+			});
+
+			this.socket.on('conflict', (data: any) => {
+				console.log('Conflict detected:', data);
+				this.handleConflict(data);
+			});
+
+			this.socket.on('connect_error', (error: Error) => {
+				console.error('Connection error:', error);
+				this.updateStatusBar('error');
+				new Notice(`Connection error: ${error.message}`);
+			});
+
+			this.socket.on('heartbeat', (data: any) => {
+				console.log('Heartbeat:', data.timestamp);
+			});
+
+		} catch (error) {
+			console.error('Failed to connect:', error);
+			new Notice(`Failed to connect: ${error.message}`);
+			this.updateStatusBar('error');
+		}
+	}
+
+	disconnect() {
+		if (this.socket) {
+			this.socket.disconnect();
+			this.socket = null;
+		}
+
+		// Stop sync service
+		if (this.syncService) {
+			this.syncService.stop();
+		}
+
+		this.isConnected = false;
+		this.updateStatusBar('disconnected');
+		new Notice('Disconnected from VaultSync');
+	}
+
+	/**
+	 * Batch notifications to avoid notification spam during bulk operations
+	 * Collects multiple operations of the same type and shows a single consolidated notification
+	 */
+	private batchNotification(operation: string, filePath: string): void {
+		// Check if sync notifications are enabled
+		if (!this.settings.notifyOnSync) {
+			return;
+		}
+
+		const batch = this.notificationBatch.get(operation);
+
+		if (batch) {
+			// Add to existing batch and reset timeout
+			batch.files.push(filePath);
+			clearTimeout(batch.timeout);
+
+			// Set new timeout to show notification
+			batch.timeout = setTimeout(() => {
+				this.showBatchedNotification(operation, batch.files);
+				this.notificationBatch.delete(operation);
+			}, this.BATCH_DELAY_MS);
+		} else {
+			// Create new batch
+			const timeout = setTimeout(() => {
+				const currentBatch = this.notificationBatch.get(operation);
+				if (currentBatch) {
+					this.showBatchedNotification(operation, currentBatch.files);
+					this.notificationBatch.delete(operation);
+				}
+			}, this.BATCH_DELAY_MS);
+
+			this.notificationBatch.set(operation, {
+				files: [filePath],
+				timeout
+			});
+		}
+	}
+
+	/**
+	 * Show a consolidated notification for batched operations
+	 */
+	private showBatchedNotification(operation: string, files: string[]): void {
+		const count = files.length;
+
+		if (count === 1) {
+			// Single file - show regular notification
+			const operationLabels: Record<string, string> = {
+				delete: 'deleted',
+				create: 'created',
+				update: 'updated',
+				rename: 'renamed'
+			};
+			const label = operationLabels[operation] || operation;
+			new Notice(`File ${label} from remote: ${files[0]}`);
+		} else {
+			// Multiple files - show batched notification
+			const operationLabels: Record<string, string> = {
+				delete: 'Deleted',
+				create: 'Created',
+				update: 'Updated',
+				rename: 'Renamed'
+			};
+			const label = operationLabels[operation] || operation;
+			new Notice(`${label} ${count} files from remote`);
+		}
+	}
+
+	async handleRemoteChange(data: any) {
+		try {
+			const { file_path, operation, device_id, old_path } = data;
+
+			// Skip if change is from this device
+			if (device_id === this.settings.deviceId) {
+				console.log(`[VaultSync] Skipping sync event from own device: ${file_path}`);
+				return;
+			}
+
+			console.log(`[VaultSync] Processing remote change for: ${file_path}, operation: ${operation}`);
+
+			// Handle delete operation
+			if (operation === 'delete') {
+				const file = this.app.vault.getAbstractFileByPath(file_path);
+				if (file instanceof TFile) {
+					await this.app.vault.delete(file);
+
+					// Batch notifications for multiple deletes
+					this.batchNotification('delete', file_path);
+
+					// Clean up sync state
+					if (this.fileSyncService) {
+						this.fileSyncService.clearSyncState(file_path);
+					}
+				} else {
+					console.log(`[VaultSync] File already deleted locally: ${file_path}`);
+				}
+				return;
+			}
+
+			// Handle rename operation
+			if (operation === 'rename' && old_path) {
+				const oldFile = this.app.vault.getAbstractFileByPath(old_path);
+				if (oldFile instanceof TFile) {
+					console.log(`[VaultSync] Renaming file: ${old_path} -> ${file_path}`);
+					await this.app.vault.rename(oldFile, file_path);
+
+					// Batch notification for rename
+					this.batchNotification('rename', `${old_path} → ${file_path}`);
+
+					// Update sync state with new path
+					if (this.fileSyncService) {
+						await this.fileSyncService.handleFileRename(old_path, file_path);
+					}
+				} else {
+					// Old file doesn't exist locally, treat as create
+					console.log(`[VaultSync] Old file not found, treating rename as create: ${file_path}`);
+					if (this.fileSyncService) {
+						const result = await this.fileSyncService.downloadFile(file_path);
+						if (result.success) {
+							this.batchNotification('create', file_path);
+						}
+					}
+				}
+				return;
+			}
+
+			// For create/update operations, check if we need to download
+			if (this.fileSyncService) {
+				const { hash: remoteHash } = data;
+
+				// Check if file exists locally
+				const localFile = this.app.vault.getAbstractFileByPath(file_path);
+
+				if (localFile instanceof TFile && remoteHash) {
+					// Compute local file hash
+					const content = await this.app.vault.read(localFile);
+					const localHash = await this.fileSyncService.computeHash(content);
+
+					// If hashes match, skip download - file is already up to date
+					if (localHash === remoteHash) {
+						console.log(`[VaultSync] Skipping download for ${file_path} - hash matches (${remoteHash.substring(0, 8)})`);
+						// Update stored hash to prevent unnecessary uploads
+						this.fileSyncService.updateFileHash(file_path, remoteHash);
+						return;
+					}
+
+					console.log(`[VaultSync] Hash mismatch for ${file_path}: local=${localHash.substring(0, 8)}, remote=${remoteHash.substring(0, 8)}`);
+				}
+
+				// Safe to download - either file doesn't exist locally, hash differs, or no local changes
+				// Note: We don't need to ignore the file watcher because the hash-based check in
+				// uploadFile() will prevent unnecessary re-uploads after download
+				const result = await this.fileSyncService.downloadFile(file_path);
+				if (result.success) {
+					console.log(`[VaultSync] Successfully synced remote change: ${file_path}`);
+
+					// Batch notification for create/update
+					const action = operation === 'create' ? 'create' : 'update';
+					this.batchNotification(action, file_path);
+				} else {
+					console.error(`[VaultSync] Failed to sync remote change: ${file_path}`, result.error);
+					new Notice(`Failed to sync remote change: ${result.error}`);
+				}
+			} else {
+				console.error(`[VaultSync] FileSyncService not available to handle remote change`);
+			}
+		} catch (error) {
+			console.error('Error handling remote change:', error);
+			new Notice(`Error syncing remote change: ${error.message}`);
+		}
+	}
+
+	handleConflict(data: any) {
+		const { file_path, local_hash, remote_hash } = data;
+		new Notice(`Conflict detected in ${file_path}. Please resolve manually.`, 10000);
+		// TODO: Implement conflict resolution UI
+	}
+
+	async forceSyncAll() {
+		if (!this.isConnected) {
+			new Notice('Not connected to VaultSync');
+			return;
+		}
+
+		new Notice('Starting full sync...');
+		const files = this.app.vault.getFiles(); // Changed from getMarkdownFiles() to getFiles()
+		let synced = 0;
+
+		for (const file of files) {
+			if (this.shouldSyncFile(file)) {
+				await this.syncFile(file, 'modify');
+				synced++;
+			}
+		}
+
+		new Notice(`Synced ${synced} files`);
+	}
+
+	/**
+	 * Perform Smart Sync
+	 */
+	async performSmartSync(): Promise<void> {
+		if (!this.isConnected) {
+			new Notice('Not connected to VaultSync');
+			return;
+		}
+
+		if (!this.syncService) {
+			new Notice('Sync service not initialized');
+			return;
+		}
+
+		try {
+			if (this.settings.notifyOnSync) {
+				new Notice('Starting Smart Sync...');
+			}
+			const result = await this.syncService.smartSync();
+
+			if (this.settings.notifyOnSync) {
+				if (result.success) {
+					new Notice(
+						`Smart Sync completed: ${result.filesUploaded} uploaded, ${result.filesDownloaded} downloaded`
+					);
+				} else {
+					new Notice(
+						`Smart Sync completed with ${result.errors.length} error(s). Check sync log for details.`
+					);
+				}
+			}
+		} catch (error) {
+			console.error('Smart Sync error:', error);
+			new Notice(`Smart Sync failed: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Perform Pull All
+	 */
+	async performPullAll(): Promise<void> {
+		if (!this.isConnected) {
+			new Notice('Not connected to VaultSync');
+			return;
+		}
+
+		if (!this.syncService) {
+			new Notice('Sync service not initialized');
+			return;
+		}
+
+		const confirmed = confirm(
+			'Pull All will download all remote files and create conflict copies for any local differences. Continue?'
+		);
+
+		if (!confirmed) {
+			return;
+		}
+
+		try {
+			new Notice('Starting Pull All...');
+			const result = await this.syncService.pullAll();
+			
+			if (result.success) {
+				new Notice(
+					`Pull All completed: ${result.filesDownloaded} files downloaded`
+				);
+			} else {
+				new Notice(
+					`Pull All completed with ${result.errors.length} error(s). Check sync log for details.`
+				);
+			}
+		} catch (error) {
+			console.error('Pull All error:', error);
+			new Notice(`Pull All failed: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Perform Push All
+	 */
+	async performPushAll(): Promise<void> {
+		if (!this.isConnected) {
+			new Notice('Not connected to VaultSync');
+			return;
+		}
+
+		if (!this.syncService) {
+			new Notice('Sync service not initialized');
+			return;
+		}
+
+		const confirmed = confirm(
+			'Push All will upload all local files and overwrite remote versions. Continue?'
+		);
+
+		if (!confirmed) {
+			return;
+		}
+
+		try {
+			new Notice('Starting Push All...');
+			const result = await this.syncService.pushAll();
+			
+			if (result.success) {
+				new Notice(
+					`Push All completed: ${result.filesUploaded} files uploaded`
+				);
+			} else {
+				new Notice(
+					`Push All completed with ${result.errors.length} error(s). Check sync log for details.`
+				);
+			}
+		} catch (error) {
+			console.error('Push All error:', error);
+			new Notice(`Push All failed: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Perform Force Sync
+	 */
+	async performForceSync(): Promise<void> {
+		if (!this.isConnected) {
+			new Notice('Not connected to VaultSync');
+			return;
+		}
+
+		if (!this.syncService) {
+			new Notice('Sync service not initialized');
+			return;
+		}
+
+		const confirmed = confirm(
+			'Force Sync will clear sync state and re-sync all files. Continue?'
+		);
+
+		if (!confirmed) {
+			return;
+		}
+
+		try {
+			if (this.settings.notifyOnSync) {
+				new Notice('Starting Force Sync...');
+			}
+			const result = await this.syncService.forceSync();
+
+			if (this.settings.notifyOnSync) {
+				if (result.success) {
+					new Notice(
+						`Force Sync completed: ${result.filesProcessed} files processed`
+					);
+				} else {
+					new Notice(
+						`Force Sync completed with ${result.errors.length} error(s). Check sync log for details.`
+					);
+				}
+			}
+		} catch (error) {
+			console.error('Force Sync error:', error);
+			new Notice(`Force Sync failed: ${error.message}`);
+		}
+	}
+
+	/**
+	 * View Conflicts
+	 */
+	viewConflicts(): void {
+		if (!this.conflictService) {
+			new Notice('Conflict service not initialized');
+			return;
+		}
+
+		const conflicts = this.conflictService.getConflicts();
+		
+		if (conflicts.length === 0) {
+			new Notice('No conflicts to resolve');
+			return;
+		}
+
+		// Open conflict resolution modal
+		const modal = new ConflictResolutionModal(
+			this.app,
+			this.conflictService,
+			() => {
+				// Refresh callback
+				console.log('Conflicts resolved');
+			}
+		);
+		modal.open();
+	}
+
+	/**
+	 * View Sync Log
+	 */
+	viewSyncLog(): void {
+		if (!this.syncLogService) {
+			new Notice('Sync log service not initialized');
+			return;
+		}
+
+		const modal = new SyncLogModal(this.app, this.syncLogService);
+		modal.open();
+	}
+
+	/**
+	 * Show sync menu
+	 */
+	private showSyncMenu(evt: MouseEvent): void {
+		const menu = new Menu();
+
+		// Connection status
+		menu.addItem((item) => {
+			item
+				.setTitle(this.isConnected ? '🟢 Connected' : '⚫ Disconnected')
+				.setDisabled(true);
+		});
+
+		menu.addSeparator();
+
+		// Connect/Disconnect
+		if (this.isConnected) {
+			menu.addItem((item) => {
+				item
+					.setTitle('Disconnect')
+					.setIcon('plug-zap-off')
+					.onClick(() => this.disconnect());
+			});
+		} else {
+			menu.addItem((item) => {
+				item
+					.setTitle('Connect')
+					.setIcon('plug-zap')
+					.onClick(() => this.connect());
+			});
+		}
+
+		menu.addSeparator();
+
+		// Sync operations
+		menu.addItem((item) => {
+			item
+				.setTitle('Smart Sync')
+				.setIcon('refresh-cw')
+				.setDisabled(!this.isConnected)
+				.onClick(() => this.performSmartSync());
+		});
+
+		menu.addItem((item) => {
+			item
+				.setTitle('Pull All')
+				.setIcon('download')
+				.setDisabled(!this.isConnected)
+				.onClick(() => this.performPullAll());
+		});
+
+		menu.addItem((item) => {
+			item
+				.setTitle('Push All')
+				.setIcon('upload')
+				.setDisabled(!this.isConnected)
+				.onClick(() => this.performPushAll());
+		});
+
+		menu.addItem((item) => {
+			item
+				.setTitle('Force Sync')
+				.setIcon('zap')
+				.setDisabled(!this.isConnected)
+				.onClick(() => this.performForceSync());
+		});
+
+		menu.addSeparator();
+
+		// View options
+		menu.addItem((item) => {
+			const conflictCount = this.conflictService?.getConflictCount() || 0;
+			item
+				.setTitle(`View Conflicts ${conflictCount > 0 ? `(${conflictCount})` : ''}`)
+				.setIcon('alert-triangle')
+				.onClick(() => this.viewConflicts());
+		});
+
+		menu.addItem((item) => {
+			item
+				.setTitle('View Sync Log')
+				.setIcon('file-text')
+				.onClick(() => this.viewSyncLog());
+		});
+
+		menu.showAtMouseEvent(evt);
+	}
+
+	showSyncStatus() {
+		const status = this.isConnected ? 'Connected' : 'Disconnected';
+		const vault = this.settings.vaultId || 'Not configured';
+		new Notice(`VaultSync Status: ${status}\nVault: ${vault}`, 5000);
+	}
+
+	updateStatusBar(status: 'connected' | 'disconnected' | 'syncing' | 'connecting' | 'error') {
+		const icons = {
+			connected: '🟢',
+			disconnected: '⚫',
+			syncing: '🔄',
+			connecting: '🟡',
+			error: '🔴'
+		};
+
+		const labels = {
+			connected: 'VaultSync: Connected',
+			disconnected: 'VaultSync: Disconnected',
+			syncing: 'VaultSync: Syncing...',
+			connecting: 'VaultSync: Connecting...',
+			error: 'VaultSync: Error'
+		};
+
+		// Add cross-tenant indicator if applicable
+		let crossTenantIndicator = '';
+		if (this.vaultService && status === 'connected') {
+			const isCrossTenant = this.vaultService.isCrossTenantVault();
+			const permission = this.vaultService.getCurrentVaultPermission();
+			
+			if (isCrossTenant) {
+				if (permission === 'read') {
+					crossTenantIndicator = ' 🔗👁️';
+				} else if (permission === 'write') {
+					crossTenantIndicator = ' 🔗✏️';
+				} else {
+					crossTenantIndicator = ' 🔗';
+				}
+			}
+		}
+
+		this.statusBarItem.setText(`${icons[status]} ${labels[status]}${crossTenantIndicator}`);
+		this.updateRibbonIcon();
+	}
+
+	/**
+	 * Update ribbon icon to reflect sync status
+	 */
+	updateRibbonIcon(): void {
+		if (!this.ribbonIconEl) {
+			return;
+		}
+
+		// Remove existing status classes
+		this.ribbonIconEl.removeClass('vaultsync-connected');
+		this.ribbonIconEl.removeClass('vaultsync-disconnected');
+		this.ribbonIconEl.removeClass('vaultsync-syncing');
+		this.ribbonIconEl.removeClass('vaultsync-error');
+
+		// Add appropriate status class
+		if (this.isSyncing) {
+			this.ribbonIconEl.addClass('vaultsync-syncing');
+			this.ribbonIconEl.setAttribute('aria-label', 'VaultSync: Syncing...');
+		} else if (this.isConnected) {
+			this.ribbonIconEl.addClass('vaultsync-connected');
+			const conflictCount = this.conflictService?.getConflictCount() || 0;
+			const label = conflictCount > 0
+				? `VaultSync: Connected (${conflictCount} conflicts)`
+				: 'VaultSync: Connected';
+			this.ribbonIconEl.setAttribute('aria-label', label);
+		} else {
+			this.ribbonIconEl.addClass('vaultsync-disconnected');
+			this.ribbonIconEl.setAttribute('aria-label', 'VaultSync: Disconnected');
+		}
+	}
+}
+
+class VaultSyncSettingTab extends PluginSettingTab {
+	plugin: VaultSyncPlugin;
+
+	constructor(app: App, plugin: VaultSyncPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
+
+	display(): void {
+		const { containerEl } = this;
+		containerEl.empty();
+
+		containerEl.createEl('h2', { text: 'VaultSync Settings' });
+
+		// API URL
+		new Setting(containerEl)
+			.setName('API URL')
+			.setDesc('VaultSync API server URL')
+			.addText(text => text
+				.setPlaceholder('http://localhost:3001/v1')
+				.setValue(this.plugin.settings.apiUrl)
+				.onChange(async (value) => {
+					this.plugin.settings.apiUrl = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// WebSocket URL
+		new Setting(containerEl)
+			.setName('WebSocket URL')
+			.setDesc('VaultSync WebSocket server URL')
+			.addText(text => text
+				.setPlaceholder('http://localhost:3001')
+				.setValue(this.plugin.settings.wsUrl)
+				.onChange(async (value) => {
+					this.plugin.settings.wsUrl = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// Authentication
+		new Setting(containerEl)
+			.setName('Authentication')
+			.setDesc(this.plugin.settings.apiKey ? '🟢 Connected' : '⚫ Not connected')
+			.addButton(button => {
+				if (this.plugin.settings.apiKey) {
+					button
+						.setButtonText('Logout')
+						.setWarning()
+						.onClick(async () => {
+							// Disconnect from vault if connected
+							if (this.plugin.isConnected) {
+								this.plugin.disconnect();
+							}
+
+							// Clear all authentication and sync state
+							this.plugin.settings.apiKey = '';
+							this.plugin.settings.apiKeyExpires = null;
+							this.plugin.settings.vaultId = '';
+
+							// Clear initial sync state from plugin data
+							if (this.plugin.initialSyncService) {
+								try {
+									// Clear all initial sync states
+									await this.plugin.initialSyncService['storage'].set('initialSyncStates', {});
+								} catch (e) {
+									console.warn('Could not clear initial sync states:', e);
+								}
+							}
+
+							// Clear file sync state
+							const syncStateFile = `${this.plugin.manifest.dir}/.sync-state.json`;
+							const adapter = this.plugin.app.vault.adapter;
+							try {
+								if (await adapter.exists(syncStateFile)) {
+									await adapter.remove(syncStateFile);
+								}
+							} catch (e) {
+								console.warn('Could not clear sync state file:', e);
+							}
+
+							await this.plugin.saveSettings();
+							new Notice('Logged out successfully. All sync state has been cleared.');
+							this.display();
+						});
+				} else {
+					button
+						.setButtonText('Login')
+						.setCta()
+						.onClick(async () => {
+							try {
+								// Ensure clean state before login
+								this.plugin.settings.apiKey = '';
+								this.plugin.settings.apiKeyExpires = null;
+								this.plugin.settings.vaultId = '';
+
+								// Clear initial sync state from plugin data
+								if (this.plugin.initialSyncService) {
+									try {
+										// Clear all initial sync states
+										await this.plugin.initialSyncService['storage'].set('initialSyncStates', {});
+									} catch (e) {
+										console.warn('Could not clear initial sync states:', e);
+									}
+								}
+
+								// Clear file sync state
+								const syncStateFile = `${this.plugin.manifest.dir}/.sync-state.json`;
+								const adapter = this.plugin.app.vault.adapter;
+								try {
+									if (await adapter.exists(syncStateFile)) {
+										await adapter.remove(syncStateFile);
+									}
+								} catch (e) {
+									console.warn('Could not clear sync state file:', e);
+								}
+
+								await this.plugin.saveSettings();
+
+								// Show loading notice
+								const loadingNotice = new Notice('Requesting authorization code...', 0);
+
+								// Start device auth flow
+								const deviceCodeResp = await fetch(`${this.plugin.settings.apiBaseURL}/auth/device/code`, {
+									method: 'POST',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({
+										client_id: 'obsidian-plugin',
+										scope: 'vault:read vault:write file:read file:write'
+									})
+								});
+
+								if (!deviceCodeResp.ok) {
+									throw new Error('Failed to request device code');
+								}
+
+								const deviceData = await deviceCodeResp.json();
+								loadingNotice.hide();
+
+								// Show user code
+								const modal = new Modal(this.app);
+								modal.titleEl.setText('Authorize VaultSync');
+								const codeEl = modal.contentEl.createDiv();
+								codeEl.innerHTML = `
+									<p style="margin-bottom: 15px;">Enter this code in your browser:</p>
+									<div style="text-align: center; font-size: 32px; font-family: monospace; font-weight: bold; letter-spacing: 4px; padding: 20px; background: var(--background-secondary); border: 2px solid var(--interactive-accent); border-radius: 8px; margin: 20px 0;">
+										${deviceData.user_code}
+									</div>
+									<p style="margin: 15px 0; font-size: 13px; color: var(--text-muted);">
+										1. A browser window should open automatically<br/>
+										2. If not, click the button below<br/>
+										3. Enter the code and select token duration<br/>
+										4. Click "Authorize"
+									</p>
+								`;
+
+								const btnContainer = codeEl.createDiv({ attr: { style: 'text-align: center; margin-top: 20px;' } });
+								const openBtn = btnContainer.createEl('button', { text: 'Open Browser', cls: 'mod-cta' });
+								openBtn.style.marginRight = '10px';
+								openBtn.onclick = () => window.open(deviceData.verification_uri_complete, '_blank');
+
+								const cancelBtn = btnContainer.createEl('button', { text: 'Cancel' });
+								cancelBtn.onclick = () => modal.close();
+
+								const waitingEl = codeEl.createDiv({ attr: { style: 'text-align: center; margin-top: 20px; color: var(--text-muted);' } });
+								waitingEl.innerHTML = '<p>Waiting for authorization...</p>';
+
+								// Open browser automatically
+								window.open(deviceData.verification_uri_complete, '_blank');
+								modal.open();
+
+								// Poll for token
+								const pollInterval = deviceData.interval * 1000;
+								const expiresAt = Date.now() + deviceData.expires_in * 1000;
+								let cancelled = false;
+
+								modal.onClose = () => { cancelled = true; };
+
+								const poll = async () => {
+									if (cancelled || Date.now() >= expiresAt) {
+										return;
+									}
+
+									try {
+										const tokenResp = await fetch(`${this.plugin.settings.apiBaseURL}/auth/device/token`, {
+											method: 'POST',
+											headers: { 'Content-Type': 'application/json' },
+											body: JSON.stringify({ device_code: deviceData.device_code })
+										});
+
+										if (tokenResp.ok) {
+											const tokenData = await tokenResp.json();
+											this.plugin.settings.apiKey = tokenData.access_token;
+											const expiresDate = new Date(Date.now() + tokenData.expires_in * 1000);
+											this.plugin.settings.apiKeyExpires = expiresDate;
+											await this.plugin.saveSettings();
+											modal.close();
+											new Notice('Successfully authorized! 🎉');
+											this.display();
+										} else {
+											const error = await tokenResp.json();
+											if (error.error !== 'authorization_pending') {
+												throw new Error(error.error_description || 'Authorization failed');
+											}
+											// Still pending, continue polling
+											setTimeout(poll, pollInterval);
+										}
+									} catch (err) {
+										modal.close();
+										new Notice('Authorization failed: ' + err.message);
+									}
+								};
+
+								// Start polling
+								setTimeout(poll, pollInterval);
+
+							} catch (err) {
+								new Notice('Failed to start authorization: ' + err.message);
+							}
+						});
+				}
+			});
+
+		// Vault Selection
+		this.addVaultSelector(containerEl);
+
+		// Device ID (read-only)
+		new Setting(containerEl)
+			.setName('Device ID')
+			.setDesc('Unique identifier for this device')
+			.addText(text => {
+				text.setValue(this.plugin.settings.deviceId);
+				text.inputEl.disabled = true;
+			});
+
+		// Auto Sync
+		new Setting(containerEl)
+			.setName('Auto Sync')
+			.setDesc('Automatically sync file changes')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.autoSync)
+				.onChange(async (value) => {
+					this.plugin.settings.autoSync = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// Excluded Folders
+		new Setting(containerEl)
+			.setName('Excluded Folders')
+			.setDesc('Folders to exclude from sync (comma-separated)')
+			.addText(text => text
+				.setPlaceholder('.obsidian, .trash')
+				.setValue(this.plugin.settings.excludedFolders.join(', '))
+				.onChange(async (value) => {
+					this.plugin.settings.excludedFolders = value
+						.split(',')
+						.map(f => f.trim())
+						.filter(f => f.length > 0);
+					await this.plugin.saveSettings();
+				}));
+
+		// Connection Controls
+		containerEl.createEl('h3', { text: 'Connection' });
+
+		new Setting(containerEl)
+			.setName('Connection Status')
+			.setDesc(this.plugin.isConnected ? 'Connected' : 'Disconnected')
+			.addButton(button => button
+				.setButtonText(this.plugin.isConnected ? 'Disconnect' : 'Connect')
+				.onClick(async () => {
+					if (this.plugin.isConnected) {
+						this.plugin.disconnect();
+					} else {
+						await this.plugin.connect();
+					}
+					this.display(); // Refresh settings
+				}));
+
+		new Setting(containerEl)
+			.setName('Force Sync All')
+			.setDesc('Sync all files in the vault')
+			.addButton(button => button
+				.setButtonText('Sync All')
+				.onClick(async () => {
+					await this.plugin.forceSyncAll();
+				}));
+
+		// Log Level
+		containerEl.createEl('h3', { text: 'Logging' });
+		
+		new Setting(containerEl)
+			.setName('Log Level')
+			.setDesc('Control how much information is logged to the console')
+			.addDropdown(dropdown => {
+				// Add all log levels
+				Object.entries(LOG_LEVEL_NAMES).forEach(([value, name]) => {
+					const level = parseInt(value) as LogLevel;
+					const description = LOG_LEVEL_DESCRIPTIONS[level];
+					dropdown.addOption(value, `${name} - ${description}`);
+				});
+				
+				dropdown
+					.setValue(this.plugin.settings.logLevel.toString())
+					.onChange(async (value) => {
+						const level = parseInt(value) as LogLevel;
+						this.plugin.settings.logLevel = level;
+						await this.plugin.saveSettings();
+						
+						// Update logger immediately
+						logger.setLevel(level);
+						logger.info(`Log level changed to: ${LOG_LEVEL_NAMES[level]}`);
+						
+						new Notice(`Log level set to: ${LOG_LEVEL_NAMES[level]}`);
+					});
+			});
+
+		// Keyboard Shortcuts
+		containerEl.createEl('h3', { text: 'Keyboard Shortcuts' });
+
+		const shortcutsDesc = containerEl.createDiv({ cls: 'vaultsync-shortcuts-info' });
+		shortcutsDesc.style.marginBottom = '16px';
+		shortcutsDesc.style.padding = '12px';
+		shortcutsDesc.style.backgroundColor = 'var(--background-secondary)';
+		shortcutsDesc.style.borderRadius = '4px';
+
+		const shortcutsList = [
+			{ name: 'Connect', shortcut: 'Ctrl/Cmd + Shift + C' },
+			{ name: 'Disconnect', shortcut: 'Ctrl/Cmd + Shift + D' },
+			{ name: 'Smart Sync', shortcut: 'Ctrl/Cmd + Shift + S' },
+			{ name: 'Pull All', shortcut: 'Ctrl/Cmd + Shift + P' },
+			{ name: 'Push All', shortcut: 'Ctrl/Cmd + Shift + U' },
+			{ name: 'Force Sync', shortcut: 'Ctrl/Cmd + Shift + F' },
+			{ name: 'View Conflicts', shortcut: 'Ctrl/Cmd + Shift + K' },
+			{ name: 'View Sync Log', shortcut: 'Ctrl/Cmd + Shift + L' }
+		];
+
+		shortcutsDesc.createEl('p', {
+			text: 'Default keyboard shortcuts (customizable in Obsidian settings):',
+			attr: { style: 'margin-bottom: 8px; font-weight: 500;' }
+		});
+
+		const table = shortcutsDesc.createEl('table', {
+			attr: { style: 'width: 100%; border-collapse: collapse;' }
+		});
+
+		shortcutsList.forEach(item => {
+			const row = table.createEl('tr');
+			const nameCell = row.createEl('td', {
+				text: item.name,
+				attr: { style: 'padding: 4px 8px;' }
+			});
+			const shortcutCell = row.createEl('td', {
+				text: item.shortcut,
+				attr: {
+					style: 'padding: 4px 8px; text-align: right; font-family: monospace; color: var(--text-accent);'
+				}
+			});
+		});
+
+		const customizeNote = shortcutsDesc.createEl('p', {
+			text: 'To customize shortcuts, go to Settings → Hotkeys and search for "VaultSync"',
+			attr: {
+				style: 'margin-top: 12px; font-size: 0.9em; color: var(--text-muted); font-style: italic;'
+			}
+		});
+	}
+
+	/**
+	 * Add vault selector with refresh button
+	 */
+	private addVaultSelector(containerEl: HTMLElement): void {
+		const vaultSetting = new Setting(containerEl)
+			.setName('Vault')
+			.setDesc('Select the vault to sync with');
+
+		// Create container for dropdown and button
+		const controlsContainer = vaultSetting.controlEl.createDiv({ cls: 'vault-selector-controls' });
+		controlsContainer.style.display = 'flex';
+		controlsContainer.style.gap = '8px';
+		controlsContainer.style.alignItems = 'center';
+		controlsContainer.style.width = '100%';
+
+		// Dropdown
+		const dropdown = controlsContainer.createEl('select', { cls: 'dropdown' });
+		dropdown.style.flex = '1';
+		dropdown.style.minWidth = '200px';
+
+		// Refresh button
+		const refreshButton = controlsContainer.createEl('button', { text: '↻ Refresh', cls: 'mod-cta' });
+		refreshButton.style.flexShrink = '0';
+
+		// Loading indicator
+		const loadingEl = controlsContainer.createEl('span', { text: 'Loading...', cls: 'vault-loading' });
+		loadingEl.style.display = 'none';
+		loadingEl.style.fontSize = '0.9em';
+		loadingEl.style.color = 'var(--text-muted)';
+
+		// Load vaults function
+		const loadVaults = async () => {
+			if (!this.plugin.settings.apiKey) {
+				dropdown.empty();
+				dropdown.createEl('option', { text: 'Enter API key first', value: '' });
+				dropdown.disabled = true;
+				refreshButton.disabled = true;
+				return;
+			}
+
+			try {
+				loadingEl.style.display = 'inline';
+				refreshButton.disabled = true;
+				dropdown.disabled = true;
+
+				// Fetch vaults using API client
+				const vaults = await this.plugin.apiClient?.listVaults();
+
+				dropdown.empty();
+				
+				if (!vaults || vaults.length === 0) {
+					dropdown.createEl('option', { text: 'No vaults found', value: '' });
+					new Notice('No vaults found. Create a vault in the web UI first.');
+				} else {
+					// Add placeholder option
+					dropdown.createEl('option', { text: 'Select a vault...', value: '' });
+					
+					// Add vault options
+					vaults.forEach((vault: any) => {
+						const option = dropdown.createEl('option', {
+							text: `${vault.name} (${vault.file_count || 0} files)`,
+							value: vault.vault_id
+						});
+						if (vault.vault_id === this.plugin.settings.vaultId) {
+							option.selected = true;
+						}
+					});
+
+					new Notice(`Found ${vaults.length} vault(s)`);
+				}
+
+				dropdown.disabled = false;
+			} catch (error) {
+				console.error('Failed to load vaults:', error);
+				dropdown.empty();
+				dropdown.createEl('option', { text: 'Error loading vaults', value: '' });
+				new Notice(`Failed to load vaults: ${error.message}`);
+			} finally {
+				loadingEl.style.display = 'none';
+				refreshButton.disabled = false;
+			}
+		};
+
+		// Dropdown change handler
+		dropdown.addEventListener('change', async () => {
+			const selectedVaultId = dropdown.value;
+			if (selectedVaultId) {
+				console.log('[VaultSync] Vault selected:', selectedVaultId);
+				this.plugin.settings.vaultId = selectedVaultId;
+				await this.plugin.saveSettings();
+				console.log('[VaultSync] Settings saved. Current vaultId:', this.plugin.settings.vaultId);
+				new Notice(`Vault selected: ${selectedVaultId.substring(0, 8)}...\nDisconnect and reconnect to sync with this vault.`);
+			}
+		});
+
+		// Refresh button handler
+		refreshButton.addEventListener('click', async () => {
+			await loadVaults();
+		});
+
+		// Initial load
+		if (this.plugin.settings.apiKey) {
+			loadVaults();
+		} else {
+			dropdown.createEl('option', { text: 'Enter API key first', value: '' });
+			dropdown.disabled = true;
+			refreshButton.disabled = true;
+		}
+	}
+}

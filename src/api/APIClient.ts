@@ -1,0 +1,569 @@
+import { AuthService } from '../services/AuthService';
+import { VaultInfo, FileInfo, FileContent, ConflictInfo } from '../types';
+import { API_ENDPOINTS } from '../utils/constants';
+import { retryWithBackoff, parseErrorMessage } from '../utils/helpers';
+import { logger } from '../utils/logger';
+
+export interface APIResponse<T> {
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+    request_id?: string;
+  };
+}
+
+export interface CreateFileRequest {
+  path: string;
+  content: string;
+}
+
+export interface UpdateFileRequest {
+  content: string;
+}
+
+export interface ChunkUploadRequest {
+  filename: string;
+  chunkIndex: number;
+  totalChunks: number;
+  chunkData: ArrayBuffer;
+  path: string;
+  overwrite?: boolean;
+  compressed?: boolean;
+}
+
+export interface ChunkUploadResponse {
+  message: string;
+  chunkIndex: number;
+  totalChunks: number;
+  isComplete: boolean;
+  file?: FileInfo;
+}
+
+/**
+ * API Client for VaultSync REST API
+ */
+export class APIClient {
+  private authService: AuthService;
+  private baseURL: string;
+
+  constructor(authService: AuthService, baseURL: string) {
+    this.authService = authService;
+    this.baseURL = baseURL;
+  }
+
+  /**
+   * Set base URL
+   */
+  setBaseURL(url: string): void {
+    this.baseURL = url;
+  }
+
+  /**
+   * Make authenticated request
+   */
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const apiKey = await this.authService.getApiKey();
+    if (!apiKey) {
+      throw new Error('Not authenticated');
+    }
+
+    const url = `${this.baseURL}${endpoint}`;
+    const method = options.method || 'GET';
+    
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      ...((options.headers as Record<string, string>) || {})
+    };
+
+    const response = await fetch(url, {
+      ...options,
+      headers
+    });
+
+    // Log HTTP request using the logger's http method
+    logger.http(method, endpoint, response.status);
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.error?.message || 
+        `HTTP ${response.status}: ${response.statusText}`
+      );
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Make request with retry
+   */
+  private async requestWithRetry<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    maxRetries: number = 3
+  ): Promise<T> {
+    return retryWithBackoff(
+      () => this.request<T>(endpoint, options),
+      maxRetries
+    );
+  }
+
+  // Vault Endpoints
+
+  /**
+   * List all vaults
+   */
+  async listVaults(): Promise<VaultInfo[]> {
+    const response = await this.requestWithRetry<{ vaults: any[] }>(
+      API_ENDPOINTS.VAULTS
+    );
+    
+    return response.vaults.map(v => ({
+      vault_id: v.vault_id,
+      name: v.name,
+      file_count: v.file_count,
+      total_size_bytes: v.total_size_bytes,
+      created_at: new Date(v.created_at),
+      updated_at: new Date(v.updated_at)
+    }));
+  }
+
+  /**
+   * Get vault by ID
+   */
+  async getVault(vaultId: string): Promise<VaultInfo> {
+    const response = await this.requestWithRetry<any>(
+      API_ENDPOINTS.VAULT(vaultId)
+    );
+    
+    return {
+      vault_id: response.vault_id,
+      name: response.name,
+      file_count: response.file_count,
+      total_size_bytes: response.total_size_bytes,
+      created_at: new Date(response.created_at),
+      updated_at: new Date(response.updated_at),
+      is_cross_tenant: response.is_cross_tenant,
+      permission: response.permission,
+      owner_tenant_id: response.owner_tenant_id
+    };
+  }
+
+  /**
+   * Get vault access information including cross-tenant status
+   */
+  async getVaultAccess(vaultId: string): Promise<{
+    vault_id: string;
+    is_cross_tenant: boolean;
+    permission: 'read' | 'write' | 'admin';
+    owner_tenant_id: string;
+  }> {
+    const response = await this.requestWithRetry<any>(
+      `/vaults/${vaultId}/access`
+    );
+    
+    return {
+      vault_id: response.vault_id,
+      is_cross_tenant: response.is_cross_tenant,
+      permission: response.permission,
+      owner_tenant_id: response.owner_tenant_id
+    };
+  }
+
+  /**
+   * Create a new vault
+   */
+  async createVault(name: string): Promise<VaultInfo> {
+    const response = await this.request<any>(
+      API_ENDPOINTS.VAULTS,
+      {
+        method: 'POST',
+        body: JSON.stringify({ name })
+      }
+    );
+    
+    return {
+      vault_id: response.vault_id,
+      name: response.name,
+      file_count: response.file_count,
+      total_size_bytes: response.total_size_bytes,
+      created_at: new Date(response.created_at),
+      updated_at: new Date(response.updated_at)
+    };
+  }
+
+  // File Endpoints
+
+  /**
+   * List all files in a vault
+   */
+  async listFiles(vaultId: string): Promise<FileInfo[]> {
+    const response = await this.requestWithRetry<{ files: any[] }>(
+      API_ENDPOINTS.FILES(vaultId)
+    );
+
+    return response.files.map(f => ({
+      file_id: f.file_id,
+      vault_id: f.vault_id,
+      path: f.path,
+      size_bytes: f.size_bytes,
+      hash: f.hash,
+      created_at: new Date(f.created_at),
+      updated_at: new Date(f.updated_at),
+      last_editor: f.last_editor
+    }));
+  }
+
+  /**
+   * Get files that have changed since a specific timestamp (incremental sync)
+   * This is much more efficient than listFiles() for periodic sync checks
+   */
+  async getChangedFiles(vaultId: string, since: Date): Promise<FileInfo[]> {
+    const sinceISO = since.toISOString();
+    const response = await this.requestWithRetry<{ files: any[] }>(
+      `${API_ENDPOINTS.FILES(vaultId)}/changes?since=${encodeURIComponent(sinceISO)}`
+    );
+
+    return response.files.map(f => ({
+      file_id: f.file_id,
+      vault_id: f.vault_id,
+      path: f.path,
+      size_bytes: f.size_bytes,
+      hash: f.hash,
+      created_at: new Date(f.created_at),
+      updated_at: new Date(f.updated_at),
+      last_editor: f.last_editor
+    }));
+  }
+
+  /**
+   * Get file by path
+   * Note: Does NOT retry on 404 errors since they're expected when file doesn't exist
+   */
+  async getFileByPath(vaultId: string, filePath: string): Promise<FileContent> {
+    try {
+      // Use direct request without retry for 404s
+      const response = await this.request<any>(
+        API_ENDPOINTS.FILE_CONTENT(vaultId, filePath)
+      );
+      
+      return {
+        file_id: response.file_id,
+        path: response.path,
+        content: response.content,
+        hash: response.hash,
+        created_at: response.created_at,
+        updated_at: response.updated_at
+      };
+    } catch (error) {
+      // If it's a 404, throw immediately without retry
+      if (error instanceof Error && error.message.includes('404')) {
+        throw error;
+      }
+      // For other errors, retry
+      const response = await this.requestWithRetry<any>(
+        API_ENDPOINTS.FILE_CONTENT(vaultId, filePath),
+        {},
+        2 // Only 2 retries for non-404 errors
+      );
+      
+      return {
+        file_id: response.file_id,
+        path: response.path,
+        content: response.content,
+        hash: response.hash,
+        created_at: response.created_at,
+        updated_at: response.updated_at
+      };
+    }
+  }
+
+  /**
+   * Create a new file
+   */
+  async createFile(vaultId: string, request: CreateFileRequest): Promise<FileInfo> {
+    const response = await this.request<any>(
+      API_ENDPOINTS.FILES(vaultId),
+      {
+        method: 'POST',
+        body: JSON.stringify(request)
+      }
+    );
+    
+    return {
+      file_id: response.file_id,
+      vault_id: response.vault_id,
+      path: response.path,
+      size_bytes: response.size_bytes,
+      hash: response.hash,
+      created_at: new Date(response.created_at),
+      updated_at: new Date(response.updated_at)
+    };
+  }
+
+  /**
+   * Update a file
+   */
+  async updateFile(
+    vaultId: string,
+    fileId: string,
+    request: UpdateFileRequest
+  ): Promise<FileInfo> {
+    const response = await this.request<any>(
+      API_ENDPOINTS.FILE(vaultId, fileId),
+      {
+        method: 'PUT',
+        body: JSON.stringify(request)
+      }
+    );
+    
+    return {
+      file_id: response.file_id,
+      vault_id: response.vault_id,
+      path: response.path,
+      size_bytes: response.size_bytes,
+      hash: response.hash,
+      created_at: new Date(response.created_at),
+      updated_at: new Date(response.updated_at)
+    };
+  }
+
+  /**
+   * Delete a file
+   */
+  async deleteFile(vaultId: string, fileId: string): Promise<void> {
+    await this.request<void>(
+      API_ENDPOINTS.FILE(vaultId, fileId),
+      {
+        method: 'DELETE'
+      }
+    );
+  }
+
+  /**
+   * Get file hash
+   */
+  async getFileHash(vaultId: string, filePath: string): Promise<string> {
+    const response = await this.requestWithRetry<{ hash: string }>(
+      API_ENDPOINTS.FILE_HASH(vaultId, filePath)
+    );
+    
+    return response.hash;
+  }
+
+  /**
+   * Check if file exists (without logging 404 as error)
+   * Uses HEAD request to avoid downloading file content
+   */
+  async fileExists(vaultId: string, filePath: string): Promise<boolean> {
+    try {
+      const apiKey = await this.authService.getApiKey();
+      if (!apiKey) {
+        throw new Error('Not authenticated');
+      }
+
+      const url = `${this.baseURL}${API_ENDPOINTS.FILE_CONTENT(vaultId, filePath)}`;
+
+      // Use HEAD request to check existence without downloading content
+      // Note: 404 responses are expected and normal when file doesn't exist
+      const response = await fetch(url, {
+        method: 'HEAD',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`
+        }
+      });
+
+      // Return true if file exists (200), false for 404 or any other status
+      // Don't log 404 as an error - it's expected behavior
+      return response.status === 200;
+    } catch (error) {
+      // Network errors mean we can't determine existence
+      // Only log actual network errors, not 404s
+      if (!(error instanceof TypeError)) {
+        console.warn('[APIClient] Error checking file existence:', error);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Upload a file chunk (for chunked uploads)
+   */
+  async uploadChunk(
+    vaultId: string,
+    request: ChunkUploadRequest
+  ): Promise<ChunkUploadResponse> {
+    const apiKey = await this.authService.getApiKey();
+    if (!apiKey) {
+      throw new Error('Not authenticated');
+    }
+
+    const formData = new FormData();
+    
+    // Convert ArrayBuffer to Blob
+    const blob = new Blob([request.chunkData]);
+    
+    formData.append('files', blob, request.filename);
+    formData.append('filename', request.filename);
+    formData.append('chunkIndex', request.chunkIndex.toString());
+    formData.append('totalChunks', request.totalChunks.toString());
+    formData.append('path', request.path);
+    if (request.overwrite !== undefined) {
+      formData.append('overwrite', request.overwrite.toString());
+    }
+    if (request.compressed !== undefined) {
+      formData.append('compressed', request.compressed.toString());
+    }
+    
+    const url = `${this.baseURL}/vaults/${vaultId}/files/upload/chunk`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+        // Don't set Content-Type - let browser set it with boundary for multipart/form-data
+      },
+      body: formData
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.error?.message || 
+        `Chunk upload failed: HTTP ${response.status}: ${response.statusText}`
+      );
+    }
+    
+    const result = await response.json();
+    
+    // Map response to ChunkUploadResponse
+    return {
+      message: result.message,
+      chunkIndex: result.chunkIndex,
+      totalChunks: result.totalChunks,
+      isComplete: result.isComplete,
+      file: result.file ? {
+        file_id: result.file.file_id,
+        vault_id: result.file.vault_id,
+        path: result.file.path,
+        size_bytes: result.file.size_bytes,
+        hash: result.file.hash,
+        created_at: new Date(result.file.created_at),
+        updated_at: new Date(result.file.updated_at)
+      } : undefined
+    };
+  }
+
+  // Batch Operations
+
+  /**
+   * Batch create/update files
+   */
+  async batchUpdateFiles(
+    vaultId: string,
+    operations: Array<{
+      path: string;
+      content: string;
+      operation: 'create' | 'update';
+    }>
+  ): Promise<{ success: number; failed: number; errors: any[] }> {
+    const results = {
+      success: 0,
+      failed: 0,
+      errors: [] as any[]
+    };
+
+    // Process in batches of 5
+    const batchSize = 5;
+    for (let i = 0; i < operations.length; i += batchSize) {
+      const batch = operations.slice(i, i + batchSize);
+      
+      await Promise.allSettled(
+        batch.map(async (op) => {
+          try {
+            if (op.operation === 'create') {
+              await this.createFile(vaultId, {
+                path: op.path,
+                content: op.content
+              });
+            } else {
+              // For update, we need to get the file ID first
+              const file = await this.getFileByPath(vaultId, op.path);
+              await this.updateFile(vaultId, file.file_id, {
+                content: op.content
+              });
+            }
+            results.success++;
+          } catch (error) {
+            results.failed++;
+            results.errors.push({
+              path: op.path,
+              error: parseErrorMessage(error)
+            });
+          }
+        })
+      );
+    }
+
+    return results;
+  }
+
+  // Conflict Endpoints
+
+  /**
+   * Get conflicts for a vault
+   */
+  async getConflicts(vaultId: string): Promise<ConflictInfo[]> {
+    const response = await this.requestWithRetry<{ conflicts: any[] }>(
+      API_ENDPOINTS.CONFLICTS(vaultId)
+    );
+    
+    return response.conflicts.map(c => ({
+      id: c.id,
+      path: c.path,
+      localContent: c.local_content,
+      remoteContent: c.remote_content,
+      localModified: new Date(c.local_modified),
+      remoteModified: new Date(c.remote_modified),
+      conflictType: c.conflict_type,
+      autoResolvable: c.auto_resolvable
+    }));
+  }
+
+  /**
+   * Resolve a conflict
+   */
+  async resolveConflict(
+    conflictId: string,
+    resolution: {
+      strategy: string;
+      content?: string;
+    }
+  ): Promise<void> {
+    await this.request<void>(
+      API_ENDPOINTS.CONFLICT(conflictId),
+      {
+        method: 'POST',
+        body: JSON.stringify(resolution)
+      }
+    );
+  }
+
+  // Health Check
+
+  /**
+   * Check API health
+   */
+  async healthCheck(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseURL}/health`);
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+}

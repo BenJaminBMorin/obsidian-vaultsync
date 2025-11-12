@@ -1,0 +1,256 @@
+/* Sync Log Modal Styles */
+
+.vaultsync-sync-log-modal {
+  width: 800px;
+  max-width: 90vw;
+  height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.vaultsync-sync-log-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Statistics */
+.sync-log-statistics {
+  margin-bottom: 20px;
+  padding: 15px;
+  background: var(--background-secondary);
+  border-radius: 8px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 15px;
+}
+
+.stat-item {
+  text-align: center;
+}
+
+.stat-label {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
+.stat-value {
+  font-size: 1.5em;
+  font-weight: bold;
+  color: var(--text-normal);
+}
+
+/* Filters */
+.sync-log-filters {
+  margin-bottom: 20px;
+  padding: 15px;
+  background: var(--background-secondary);
+  border-radius: 8px;
+}
+
+.sync-log-actions {
+  margin-top: 10px;
+}
+
+/* Log Entries */
+.sync-log-entries {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  background: var(--background-primary);
+  border-radius: 8px;
+}
+
+.sync-log-empty {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.sync-log-count {
+  margin-bottom: 10px;
+  padding: 5px 10px;
+  font-size: 0.9em;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border-radius: 4px;
+}
+
+.sync-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Log Entry */
+.sync-log-entry {
+  padding: 12px;
+  background: var(--background-secondary);
+  border-radius: 6px;
+  border-left: 3px solid var(--text-muted);
+  transition: all 0.2s ease;
+}
+
+.sync-log-entry:hover {
+  background: var(--background-secondary-alt);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Log type colors */
+.log-type-sync_completed {
+  border-left-color: var(--color-green);
+}
+
+.log-type-sync_error,
+.log-type-connection_error {
+  border-left-color: var(--color-red);
+}
+
+.log-type-conflict_detected {
+  border-left-color: var(--color-orange);
+}
+
+.log-type-conflict_resolved {
+  border-left-color: var(--color-blue);
+}
+
+.log-type-file_uploaded {
+  border-left-color: var(--color-cyan);
+}
+
+.log-type-file_downloaded {
+  border-left-color: var(--color-purple);
+}
+
+/* Log Entry Header */
+.log-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 0.9em;
+}
+
+.log-entry-icon {
+  font-size: 1.2em;
+}
+
+.log-entry-timestamp {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.log-entry-type {
+  padding: 2px 8px;
+  background: var(--background-modifier-border);
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-weight: 500;
+}
+
+/* Log Entry Content */
+.log-entry-message {
+  margin-bottom: 5px;
+  color: var(--text-normal);
+  font-weight: 500;
+}
+
+.log-entry-filepath {
+  margin-top: 5px;
+  padding: 4px 8px;
+  background: var(--background-primary);
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-family: var(--font-monospace);
+  color: var(--text-muted);
+}
+
+.log-entry-error {
+  margin-top: 5px;
+  padding: 8px;
+  background: var(--background-modifier-error);
+  border-radius: 4px;
+  font-size: 0.85em;
+  color: var(--text-error);
+}
+
+/* Log Entry Details */
+.log-entry-details-toggle {
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: var(--background-primary);
+  border-radius: 4px;
+  font-size: 0.85em;
+  color: var(--text-accent);
+  cursor: pointer;
+  display: inline-block;
+}
+
+.log-entry-details-toggle:hover {
+  background: var(--background-modifier-hover);
+}
+
+.log-entry-details {
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--background-primary);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.log-entry-details pre {
+  margin: 0;
+  font-size: 0.8em;
+  font-family: var(--font-monospace);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Status Bar */
+.status-bar-item.plugin-vaultsync-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.status-bar-item-icon {
+  font-size: 1em;
+}
+
+.status-bar-item-text {
+  font-size: 0.9em;
+}
+
+/* Status colors */
+.status-connected .status-bar-item-icon {
+  color: var(--color-green);
+}
+
+.status-syncing .status-bar-item-icon {
+  color: var(--color-blue);
+  animation: spin 1s linear infinite;
+}
+
+.status-error .status-bar-item-icon {
+  color: var(--color-red);
+}
+
+.status-offline .status-bar-item-icon {
+  color: var(--text-muted);
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

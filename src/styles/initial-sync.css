@@ -1,0 +1,568 @@
+/**
+ * Initial Sync Setup - CSS Styles
+ * 
+ * Styles for the initial sync wizard modal, progress modal, and confirmation dialogs.
+ * Follows Obsidian's design system and ensures responsive, accessible UI.
+ */
+
+/* ============================================
+   Wizard Modal
+   ============================================ */
+
+.initial-sync-wizard-modal {
+  max-width: 600px;
+  padding: 20px;
+}
+
+.initial-sync-wizard-modal h2 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  font-size: 1.5em;
+  color: var(--text-normal);
+}
+
+.initial-sync-intro {
+  margin-bottom: 20px;
+  padding: 12px;
+  background-color: var(--background-secondary);
+  border-radius: 6px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ============================================
+   File Analysis Summary
+   ============================================ */
+
+.initial-sync-summary {
+  margin-bottom: 20px;
+  padding: 15px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background-color: var(--background-secondary);
+}
+
+.initial-sync-summary h3 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.file-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.count-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.count-row span:first-child {
+  font-size: 1.2em;
+  flex-shrink: 0;
+}
+
+.count-row span:last-child {
+  color: var(--text-normal);
+  font-size: 0.95em;
+}
+
+.empty-message {
+  padding: 10px;
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.95em;
+}
+
+/* ============================================
+   Sync Option Cards
+   ============================================ */
+
+.initial-sync-options {
+  margin-bottom: 20px;
+}
+
+.initial-sync-options h3 {
+  margin-bottom: 15px;
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.sync-option-card {
+  margin-bottom: 15px;
+  padding: 15px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background-color: var(--background-primary);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+  cursor: pointer;
+}
+
+.sync-option-card:hover {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
+}
+
+.sync-option-card:active {
+  transform: translateY(0);
+}
+
+.sync-option-card:focus-within {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px var(--interactive-accent-hover);
+  outline: none;
+}
+
+/* Option Card Header */
+
+.option-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.option-header span:first-child {
+  font-size: 1.5em;
+  flex-shrink: 0;
+}
+
+.option-header h4 {
+  margin: 0;
+  flex: 1;
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.option-header span[style*="badge"] {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75em;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Option Card Content */
+
+.sync-option-card > div:not(.option-header):not(.benefits) {
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.sync-option-card ul {
+  margin: 10px 0 10px 20px;
+  padding: 0;
+  list-style-type: disc;
+}
+
+.sync-option-card ul li {
+  margin-bottom: 4px;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.benefits {
+  margin-bottom: 10px;
+  font-size: 0.9em;
+  color: var(--text-success);
+}
+
+.benefits div {
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+
+/* Option Card Button */
+
+.sync-option-card button {
+  width: 100%;
+  padding: 10px 16px;
+  margin-top: 5px;
+  font-size: 0.95em;
+  font-weight: 500;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.sync-option-card button:hover {
+  transform: translateY(-1px);
+}
+
+.sync-option-card button:active {
+  transform: translateY(0);
+}
+
+.sync-option-card button:focus {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+/* ============================================
+   Progress Modal
+   ============================================ */
+
+.initial-sync-progress-modal {
+  max-width: 500px;
+  padding: 20px;
+}
+
+.initial-sync-progress-modal h2 {
+  margin-top: 0;
+  margin-bottom: 20px;
+  font-size: 1.5em;
+  color: var(--text-normal);
+  transition: color 0.3s ease;
+}
+
+.progress-content {
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+/* Operation and File Labels */
+
+.operation-label {
+  font-size: 1em;
+  font-weight: 500;
+  color: var(--text-normal);
+  transition: color 0.3s ease;
+}
+
+.current-file-label {
+  font-size: 0.9em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-monospace);
+  padding: 4px 8px;
+  background-color: var(--background-secondary);
+  border-radius: 4px;
+}
+
+/* Progress Bar */
+
+.progress-bar-container {
+  position: relative;
+  width: 100%;
+  height: 30px;
+  background-color: var(--background-modifier-border);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.progress-bar-fill {
+  height: 100%;
+  width: 0%;
+  background-color: var(--interactive-accent);
+  transition: width 0.3s ease, background-color 0.3s ease;
+  position: relative;
+}
+
+.progress-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.2),
+    transparent
+  );
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.progress-percentage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 0.9em;
+  font-weight: bold;
+  color: var(--text-on-accent);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  z-index: 1;
+}
+
+/* Progress Info Labels */
+
+.file-count-label,
+.estimated-time-label {
+  font-size: 0.9em;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.estimated-time-label {
+  font-style: italic;
+}
+
+/* ============================================
+   Confirmation Modal
+   ============================================ */
+
+.initial-sync-confirmation-modal {
+  max-width: 500px;
+  padding: 20px;
+}
+
+.initial-sync-confirmation-modal h2 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  font-size: 1.4em;
+  color: var(--text-error);
+}
+
+.confirmation-warning {
+  margin-bottom: 15px;
+  padding: 15px;
+  background-color: var(--background-modifier-error);
+  border-left: 4px solid var(--text-error);
+  border-radius: 4px;
+  color: var(--text-error);
+}
+
+.confirmation-warning p {
+  margin: 0 0 10px 0;
+  line-height: 1.5;
+}
+
+.confirmation-warning p:last-child {
+  margin-bottom: 0;
+}
+
+.confirmation-warning ul {
+  margin: 10px 0 10px 20px;
+  padding: 0;
+  list-style-type: disc;
+}
+
+.confirmation-warning ul li {
+  margin-bottom: 4px;
+  font-size: 0.9em;
+  font-family: var(--font-monospace);
+}
+
+/* Confirmation Input */
+
+.confirmation-input {
+  margin-bottom: 15px;
+}
+
+.confirmation-input p {
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--text-normal);
+}
+
+.confirmation-input input {
+  width: 100%;
+  padding: 10px;
+  font-size: 1em;
+  font-family: var(--font-monospace);
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.confirmation-input input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px var(--interactive-accent-hover);
+}
+
+.confirmation-input input::placeholder {
+  color: var(--text-faint);
+}
+
+/* ============================================
+   Modal Buttons
+   ============================================ */
+
+.modal-button-container {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal-button-container button {
+  padding: 8px 16px;
+  font-size: 0.95em;
+  font-weight: 500;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, opacity 0.2s ease, transform 0.1s ease;
+}
+
+.modal-button-container button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.modal-button-container button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.modal-button-container button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-button-container button:focus {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+/* ============================================
+   Responsive Design
+   ============================================ */
+
+@media (max-width: 600px) {
+  .initial-sync-wizard-modal,
+  .initial-sync-progress-modal,
+  .initial-sync-confirmation-modal {
+    max-width: 100%;
+    padding: 15px;
+  }
+
+  .sync-option-card {
+    padding: 12px;
+  }
+
+  .option-header {
+    flex-wrap: wrap;
+  }
+
+  .option-header h4 {
+    font-size: 1em;
+  }
+
+  .modal-button-container {
+    flex-direction: column-reverse;
+  }
+
+  .modal-button-container button {
+    width: 100%;
+  }
+}
+
+/* ============================================
+   Accessibility
+   ============================================ */
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .sync-option-card {
+    border-width: 2px;
+  }
+
+  .sync-option-card:hover,
+  .sync-option-card:focus-within {
+    border-width: 3px;
+  }
+
+  .progress-bar-container {
+    border: 2px solid var(--text-normal);
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .sync-option-card,
+  .sync-option-card button,
+  .modal-button-container button,
+  .progress-bar-fill,
+  .operation-label,
+  .initial-sync-progress-modal h2 {
+    transition: none;
+  }
+
+  .progress-bar-fill::after {
+    animation: none;
+  }
+
+  .sync-option-card:hover,
+  .sync-option-card button:hover,
+  .modal-button-container button:hover {
+    transform: none;
+  }
+}
+
+/* Focus visible for keyboard navigation */
+.sync-option-card:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+/* Screen reader only text */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ============================================
+   Dark Mode Adjustments
+   ============================================ */
+
+.theme-dark .sync-option-card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.theme-dark .sync-option-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.theme-dark .progress-bar-container {
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* ============================================
+   Print Styles
+   ============================================ */
+
+@media print {
+  .initial-sync-wizard-modal,
+  .initial-sync-progress-modal,
+  .initial-sync-confirmation-modal {
+    display: none;
+  }
+}

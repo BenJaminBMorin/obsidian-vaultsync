@@ -1,0 +1,295 @@
+/* Error Notification Styles */
+
+/* Action buttons in notifications */
+.vaultsync-error-action-button,
+.vaultsync-conflict-button {
+  margin-top: 8px;
+  padding: 6px 12px;
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.vaultsync-error-action-button:hover,
+.vaultsync-conflict-button:hover {
+  background-color: var(--interactive-accent-hover);
+}
+
+.vaultsync-error-action-button:active,
+.vaultsync-conflict-button:active {
+  transform: translateY(1px);
+}
+
+/* Error notification container */
+.notice.vaultsync-error-notice {
+  border-left: 3px solid var(--text-error);
+}
+
+.notice.vaultsync-warning-notice {
+  border-left: 3px solid var(--text-warning);
+}
+
+.notice.vaultsync-success-notice {
+  border-left: 3px solid var(--text-success);
+}
+
+.notice.vaultsync-info-notice {
+  border-left: 3px solid var(--text-accent);
+}
+
+/* Error details in notifications */
+.vaultsync-error-details {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+/* Error icon styles */
+.vaultsync-error-icon {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 16px;
+}
+
+.vaultsync-error-icon.error {
+  color: var(--text-error);
+}
+
+.vaultsync-error-icon.warning {
+  color: var(--text-warning);
+}
+
+.vaultsync-error-icon.success {
+  color: var(--text-success);
+}
+
+.vaultsync-error-icon.info {
+  color: var(--text-accent);
+}
+
+/* Retry indicator */
+.vaultsync-retry-indicator {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  background-color: var(--background-modifier-border);
+  border-radius: 3px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* Error log modal styles */
+.vaultsync-error-log-modal {
+  padding: 20px;
+}
+
+.vaultsync-error-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.vaultsync-error-log-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.vaultsync-error-log-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.vaultsync-error-log-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.vaultsync-error-log-item {
+  padding: 12px;
+  margin-bottom: 8px;
+  background-color: var(--background-secondary);
+  border-radius: 6px;
+  border-left: 3px solid var(--text-error);
+  transition: all 0.2s ease;
+  animation: vaultsync-slide-in 0.3s ease;
+}
+
+.vaultsync-error-log-item:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transform: translateX(4px);
+}
+
+@keyframes vaultsync-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.vaultsync-error-log-item.severity-low {
+  border-left-color: var(--text-muted);
+}
+
+.vaultsync-error-log-item.severity-medium {
+  border-left-color: var(--text-warning);
+}
+
+.vaultsync-error-log-item.severity-high {
+  border-left-color: var(--text-error);
+}
+
+.vaultsync-error-log-item.severity-critical {
+  border-left-color: var(--text-error);
+  background-color: var(--background-modifier-error);
+}
+
+.vaultsync-error-log-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.vaultsync-error-log-item-type {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+
+.vaultsync-error-log-item-time {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.vaultsync-error-log-item-message {
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.vaultsync-error-log-item-user-message {
+  padding: 8px;
+  background-color: var(--background-primary);
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.vaultsync-error-log-item-details {
+  font-size: 11px;
+  opacity: 0.7;
+  font-family: var(--font-monospace);
+}
+
+.vaultsync-error-log-item-badges {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.vaultsync-error-log-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  background-color: var(--background-modifier-border);
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.vaultsync-error-log-badge.recoverable {
+  background-color: var(--interactive-success);
+  color: var(--text-on-accent);
+}
+
+.vaultsync-error-log-badge.retryable {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* Empty state */
+.vaultsync-error-log-empty {
+  text-align: center;
+  padding: 40px;
+  opacity: 0.6;
+}
+
+.vaultsync-error-log-empty-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.vaultsync-error-log-empty-text {
+  font-size: 14px;
+}
+
+/* Filter controls */
+.vaultsync-error-log-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.vaultsync-error-log-filter-button {
+  padding: 6px 12px;
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.vaultsync-error-log-filter-button:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.vaultsync-error-log-filter-button.active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+/* Export button */
+.vaultsync-error-log-export-button {
+  padding: 6px 12px;
+  background-color: var(--interactive-normal);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background-color 0.2s;
+}
+
+.vaultsync-error-log-export-button:hover {
+  background-color: var(--interactive-hover);
+}
+
+/* Clear button */
+.vaultsync-error-log-clear-button {
+  padding: 6px 12px;
+  background-color: var(--interactive-normal);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-error);
+  transition: background-color 0.2s;
+}
+
+.vaultsync-error-log-clear-button:hover {
+  background-color: var(--background-modifier-error);
+}
