@@ -132,7 +132,7 @@ cat > community-plugins.json << 'EOF'
   "name": "VaultSync",
   "author": "VaultSync",
   "description": "Real-time sync for your Obsidian vault with VaultSync platform. Keep your notes synchronized across devices with conflict resolution and version history.",
-  "repo": "vaultsync/obsidian-vaultsync"
+  "repo": "BenJaminBMorin/obsidian-vaultsync"
 }
 EOF
 ```
@@ -153,7 +153,7 @@ Edit `community-plugins.json` and add your plugin to the array:
     "name": "VaultSync",
     "author": "VaultSync",
     "description": "Real-time sync for your Obsidian vault with VaultSync platform. Keep your notes synchronized across devices with conflict resolution and version history.",
-    "repo": "vaultsync/obsidian-vaultsync"
+    "repo": "BenJaminBMorin/obsidian-vaultsync"
   }
 ]
 ```
@@ -184,7 +184,7 @@ Your PR description should include:
 ## Plugin Submission: VaultSync
 
 **Plugin Name:** VaultSync
-**Repository:** https://github.com/vaultsync/obsidian-vaultsync
+**Repository:** https://github.com/BenJaminBMorin/obsidian-vaultsync
 **Initial Version:** 1.0.0
 
 ### Description

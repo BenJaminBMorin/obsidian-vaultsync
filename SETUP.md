@@ -7,7 +7,7 @@ This guide will help you set up the GitHub repository for publishing to Obsidian
 Create a new **public** repository on GitHub:
 
 1. Go to https://github.com/new
-2. **Owner**: `vaultsync` (or your organization/username)
+2. **Owner**: `BenJaminBMorin`
 3. **Repository name**: `obsidian-vaultsync`
 4. **Visibility**: **Public** (required for Obsidian)
 5. **Do NOT** initialize with README, .gitignore, or license (we already have these)
@@ -23,7 +23,7 @@ Run these commands to push it to GitHub:
 cd /tmp/vaultsync-obsidian-plugin
 
 # Add GitHub as remote
-git remote add origin https://github.com/vaultsync/obsidian-vaultsync.git
+git remote add origin https://github.com/BenJaminBMorin/obsidian-vaultsync.git
 
 # Push main branch and tags
 git push -u origin main
@@ -37,13 +37,13 @@ After pushing the `1.0.0` tag, the GitHub Actions workflow will automatically:
 - Create a release
 - Upload `main.js`, `manifest.json`, and `styles.css`
 
-Check: https://github.com/vaultsync/obsidian-vaultsync/actions
+Check: https://github.com/BenJaminBMorin/obsidian-vaultsync/actions
 
 ## 4. Verify Release
 
 Check that the release was created successfully:
 
-https://github.com/vaultsync/obsidian-vaultsync/releases/tag/1.0.0
+https://github.com/BenJaminBMorin/obsidian-vaultsync/releases/tag/1.0.0
 
 It should contain:
 - ✅ main.js
@@ -62,7 +62,7 @@ Now you're ready to submit! Follow the steps in [PUBLISHING_GUIDE.md](PUBLISHING
      "name": "VaultSync",
      "author": "VaultSync",
      "description": "Real-time sync for your Obsidian vault with VaultSync platform. Keep your notes synchronized across devices with conflict resolution and version history.",
-     "repo": "vaultsync/obsidian-vaultsync"
+     "repo": "BenJaminBMorin/obsidian-vaultsync"
    }
    ```
 3. Create a Pull Request

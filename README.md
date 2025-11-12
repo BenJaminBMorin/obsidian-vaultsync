@@ -34,7 +34,7 @@ Real-time synchronization plugin for Obsidian that keeps your notes synchronized
 
 ### Manual Installation
 
-1. Download the latest release from [GitHub Releases](https://github.com/vaultsync/obsidian-vaultsync/releases)
+1. Download the latest release from [GitHub Releases](https://github.com/BenJaminBMorin/obsidian-vaultsync/releases)
 2. Extract the files to your vault's plugins folder: `<vault>/.obsidian/plugins/vaultsync/`
 3. Reload Obsidian
 4. Enable the plugin in Settings → Community Plugins
@@ -239,11 +239,11 @@ VaultSync supports self-hosting for complete control:
 
 ### Community
 - [Discord Server](https://discord.gg/vaultsync)
-- [GitHub Discussions](https://github.com/vaultsync/obsidian-vaultsync/discussions)
+- [GitHub Discussions](https://github.com/BenJaminBMorin/obsidian-vaultsync/discussions)
 - [Twitter](https://twitter.com/vaultsync)
 
 ### Issues
-Report bugs or request features on [GitHub Issues](https://github.com/vaultsync/obsidian-vaultsync/issues)
+Report bugs or request features on [GitHub Issues](https://github.com/BenJaminBMorin/obsidian-vaultsync/issues)
 
 ## Development
 
@@ -251,7 +251,7 @@ Report bugs or request features on [GitHub Issues](https://github.com/vaultsync/
 
 ```bash
 # Clone the repository
-git clone https://github.com/vaultsync/obsidian-vaultsync.git
+git clone https://github.com/BenJaminBMorin/obsidian-vaultsync.git
 cd obsidian-vaultsync
 
 # Install dependencies
@@ -295,7 +295,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 - **Homepage**: [vaultsync.io](https://vaultsync.io)
 - **Documentation**: [docs.vaultsync.io](https://docs.vaultsync.io)
-- **GitHub**: [github.com/vaultsync/obsidian-vaultsync](https://github.com/vaultsync/obsidian-vaultsync)
+- **GitHub**: [github.com/BenJaminBMorin/obsidian-vaultsync](https://github.com/BenJaminBMorin/obsidian-vaultsync)
 - **Support**: [support@vaultsync.io](mailto:support@vaultsync.io)
 
 ---
